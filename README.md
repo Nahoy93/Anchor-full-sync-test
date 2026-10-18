@@ -1,5 +1,14 @@
 ![anchor](https://github.com/garrettjoecox/OOT/assets/7316699/a8feac51-47b6-4e4c-b940-2f49fc0bc764)
 
+## Full sync fork
+
+This fork adds what the co-op build of Ship of Harkinian ([Shipwright-Anchor-full-sync](https://github.com/Nahoy93/Shipwright-Anchor-full-sync), branch `zelda-mp-coop`) needs:
+
+- **Password:** set `ANCHOR_PASSWORD` to require it on join. After 10 wrong attempts in 5 minutes an IP is blocked for a while.
+- **Saved sessions:** room progress is saved to `sessions/` (every 10 seconds and on shutdown) and loaded again when someone joins the same Room ID.
+- **Console commands:** `list`, `sessions`, `save`, `deleteSession <room>`, `deleteRoom <room>`, `messageAll <text>`, `stop`.
+- **Windows:** edit the password in `Starta server.bat` and double click it.
+
 ## What is this?
 
 Anchor is a client/server service for providing multiplayer functions in Harbor Masters 64 ports. It's primary functions are loading save state from a remote player when you join their session, and sending flag sets/item gives across all players in a room/team. 

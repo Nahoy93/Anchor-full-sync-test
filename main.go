@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	server := NewServer()
+	server := NewServer(LoadConfig())
 
 	errChan := make(chan error)
 	sigsCa := make(chan os.Signal, 1)
@@ -32,6 +32,7 @@ func main() {
 		log.Printf("=== Goroutine Dump ===\n%s\n=== End ===", buf[:stacklen])
 
 		server.saveStats()
+		server.saveAllSessions(true)
 		server.listener.Close()
 		os.Exit(0)
 	}()
@@ -187,6 +188,37 @@ func processStdin(s *Server) {
 				go sendServerMessage(client, getMessage(splitInput[1:]))
 				return true
 			})
+		case "save":
+			s.saveAllSessions(true)
+			log.Println("All sessions saved")
+		case "sessions":
+			sessions := listSessions()
+			if len(sessions) == 0 {
+				log.Println("No saved sessions")
+			}
+			for _, session := range sessions {
+				_, loaded := s.rooms.Load(session.RoomId)
+				status := ""
+				if loaded {
+					status = " (active)"
+				}
+				log.Printf("  %s - saved %s, %d team(s)%s\n", session.RoomId, session.SavedAt, session.Teams, status)
+			}
+		case "deleteSession":
+			if len(splitInput) < 2 {
+				log.Println("Usage: deleteSession <roomId>")
+				continue
+			}
+			targetRoomID := splitInput[1]
+			if _, loaded := s.rooms.Load(targetRoomID); loaded {
+				log.Println("Room", targetRoomID, "is active, use deleteRoom first")
+				continue
+			}
+			if deleteSession(targetRoomID) {
+				log.Println("Deleted saved session", targetRoomID)
+			} else {
+				log.Println("No saved session", targetRoomID)
+			}
 		case "deleteRoom":
 			targetRoomID := splitInput[1]
 
@@ -200,6 +232,9 @@ func processStdin(s *Server) {
 					}
 					return true
 				})
+				if room, ok := s.rooms.Load(targetRoomID); ok {
+					room.(*Room).save()
+				}
 				s.rooms.Delete(targetRoomID)
 			} else {
 				log.Println("Room", targetRoomID, "not found")
@@ -212,11 +247,12 @@ func processStdin(s *Server) {
 			})
 
 			s.saveStats()
+			s.saveAllSessions(true)
 			s.listener.Close()
 
 			os.Exit(0)
 		default:
-			log.Printf("Available commands:\nhelp: Show this help message\nstats: Print server stats\nquiet: Toggle quiet mode\nroomCount: Show the number of rooms\nclientCount: Show the number of clients\nlist: List all rooms and clients\nstop <message>: Stop the server\nmessage <clientId> <message>: Send a message to a client\nmessageAll <message>: Send a message to all clients\ndisable <clientId> <message>: Disable anchor on a client\ndisableAll <message>: Disable anchor on all clients\ndeleteRoom <roomID>: Disables anchor on all online clients in the room and deletes it\n")
+			log.Printf("Available commands:\nhelp: Show this help message\nstats: Print server stats\nquiet: Toggle quiet mode\nroomCount: Show the number of rooms\nclientCount: Show the number of clients\nlist: List all rooms and clients\nstop <message>: Stop the server\nmessage <clientId> <message>: Send a message to a client\nmessageAll <message>: Send a message to all clients\ndisable <clientId> <message>: Disable anchor on a client\ndisableAll <message>: Disable anchor on all clients\ndeleteRoom <roomID>: Disables anchor on all online clients in the room and deletes it\nsave: Save all sessions to disk now\nsessions: List saved sessions\ndeleteSession <roomID>: Delete a saved session (room must not be active)\n")
 		}
 	}
 }

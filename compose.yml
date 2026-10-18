@@ -1,7 +1,9 @@
 services:
   anchor:
-    image: ghcr.io/garrettjoecox/anchor:latest # remote contianer
-    #build: . # local dockerfile
+    #image: ghcr.io/garrettjoecox/anchor:latest # upstream image, has no password support
+    build: . # local dockerfile (includes password support)
+    environment:
+      - ANCHOR_PASSWORD=byt-till-ditt-losenord # leave empty for an open server
     ports:
       - "43383:43383"
     volumes:

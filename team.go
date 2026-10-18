@@ -23,6 +23,7 @@ func (t *Team) enqueue(packet string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	t.room.markDirty()
 	t.queue = append(t.queue, packet)
 	if len(t.queue) <= MAX_TEAM_QUEUE {
 		return

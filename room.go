@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -13,19 +14,22 @@ type Room struct {
 	id      string
 	clients sync.Map
 	teams   sync.Map
-	state   string     // Room Settings
-	mu      sync.Mutex // Mutex for safely updating state
+	state   string      // Room Settings
+	mu      sync.Mutex  // Mutex for safely updating state
+	dirty   atomic.Bool // Session changed since it was last written to disk
 }
 
 func NewRoom(id string, ownerClientId uint64, packet string) *Room {
 	roomState, _ := sjson.Set(gjson.Get(packet, "roomState").Raw, "ownerClientId", ownerClientId)
 
-	return &Room{
+	room := &Room{
 		id:      id,
 		clients: sync.Map{},
 		teams:   sync.Map{},
 		state:   roomState,
 	}
+	room.markDirty()
+	return room
 }
 
 func (r *Room) findOrCreateTeam(teamId string) *Team {

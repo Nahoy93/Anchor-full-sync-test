@@ -24,6 +24,8 @@ const MAX_PACKET_SIZE = 8 * 1024 * 1024
 const INITIAL_SCAN_BUFFER = 64 * 1024
 
 type Server struct {
+	config            Config
+	logins            *loginLimiter
 	listener          net.Listener
 	quietMode         atomic.Bool
 	onlineClients     sync.Map
@@ -32,8 +34,10 @@ type Server struct {
 	nextClientId      atomic.Uint64
 }
 
-func NewServer() *Server {
+func NewServer(config Config) *Server {
 	s := &Server{
+		config:            config,
+		logins:            newLoginLimiter(),
 		onlineClients:     sync.Map{},
 		quietMode:         atomic.Bool{},
 		rooms:             sync.Map{},
@@ -47,7 +51,8 @@ func NewServer() *Server {
 }
 
 func (s *Server) Start(errChan chan error) {
-	listener, err := net.Listen("tcp", ":43383")
+	addr := fmt.Sprintf(":%d", s.config.Port)
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -57,8 +62,14 @@ func (s *Server) Start(errChan chan error) {
 	go s.heartbeat(errChan)
 	go s.parseStats(errChan)
 	go s.statsHeartbeat(errChan)
+	go s.saveDirtySessions(errChan)
 
-	log.Println("Server running on :43383")
+	log.Println("Server running on", addr)
+	if s.config.Password != "" {
+		log.Println("Password protection: ON")
+	} else {
+		log.Println("Password protection: OFF (anyone can join, set -password or ANCHOR_PASSWORD)")
+	}
 	log.Println("Quiet mode:", s.quietMode.Load())
 
 	for {
@@ -134,7 +145,10 @@ func (s *Server) cleanupInactiveRooms(errChan chan error) {
 			room := value.(*Room)
 			lastActivity := room.GetLastActivity()
 			if time.Since(lastActivity) > INACTIVITY_TIMEOUT {
-				log.Println("Room", id, "has been inactive for too long, deleting it")
+				log.Println("Room", id, "has been inactive for too long, unloading it (the session stays saved)")
+				if err := room.save(); err != nil {
+					log.Printf("Could not save session %s: %v", room.id, err)
+				}
 				s.rooms.Delete(id)
 			}
 			return true
@@ -225,6 +239,20 @@ func (s *Server) handleConnection(conn net.Conn, errChan chan error) {
 				log.Println("Client must handshake first")
 				continue
 			}
+
+			ip := remoteIP(conn)
+			if s.logins.isBlocked(ip) {
+				log.Printf("Refusing handshake from %s: too many wrong passwords\n", ip)
+				rejectConnection(conn, "Too many wrong passwords. Try again in a few minutes.")
+				return
+			}
+			if !s.passwordMatches(gjson.Get(packet, "password").String()) {
+				s.logins.recordFailure(ip)
+				log.Printf("Wrong password from %s\n", ip)
+				rejectConnection(conn, "Wrong server password. Check the Password field in the Anchor menu.")
+				return
+			}
+			s.logins.reset(ip)
 
 			client = s.findOrCreateClient(packet, conn)
 			log.Printf("Client %v Connected\n", client.id)
@@ -319,7 +347,12 @@ func (s *Server) findOrCreateRoom(packet string, clientId uint64) *Room {
 
 	room, ok := s.rooms.Load(roomId)
 	if !ok {
-		room, _ = s.rooms.LoadOrStore(roomId, NewRoom(roomId, clientId, packet))
+		// Continue a saved session if there is one, otherwise start a new one
+		newRoom := loadSession(roomId)
+		if newRoom == nil {
+			newRoom = NewRoom(roomId, clientId, packet)
+		}
+		room, _ = s.rooms.LoadOrStore(roomId, newRoom)
 	}
 
 	return room.(*Room)
@@ -333,4 +366,14 @@ func splitNullByte(data []byte, atEOF bool) (advance int, token []byte, err erro
 		return len(data), data, nil
 	}
 	return 0, nil, nil
+}
+
+// rejectConnection tells a client that has not completed the handshake why it is being turned away,
+// then disables Anchor on that client so it does not keep reconnecting in a loop.
+func rejectConnection(conn net.Conn, message string) {
+	packet, _ := sjson.Set(`{"type":"SERVER_MESSAGE"}`, "message", message)
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	conn.Write(append([]byte(packet), 0))
+	conn.Write(append([]byte(`{"type":"DISABLE_ANCHOR"}`), 0))
+	time.Sleep(250 * time.Millisecond)
 }

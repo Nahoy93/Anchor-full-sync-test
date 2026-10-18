@@ -151,6 +151,7 @@ func (c *Client) handlePacket(packet string) {
 		team.droppedFromQueue = 0
 		team.clientIdsRequestingState = []uint64{}
 		team.mu.Unlock()
+		c.room.markDirty()
 
 		for _, clientId := range clientIdsRequestingState {
 			if value, ok := c.room.clients.Load(clientId); ok {
@@ -163,6 +164,7 @@ func (c *Client) handlePacket(packet string) {
 		c.room.mu.Lock()
 		c.room.state = gjson.Get(packet, "state").Raw
 		c.room.mu.Unlock()
+		c.room.markDirty()
 		c.room.broadcastPacket(packet)
 	} else if targetTeamId.Exists() {
 		team := c.room.findOrCreateTeam(targetTeamId.String())
