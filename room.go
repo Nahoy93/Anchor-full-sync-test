@@ -79,11 +79,41 @@ func (r *Room) broadcastAllClientState() {
 	})
 
 	r.clients.Range(func(id, value interface{}) bool {
+		index, ok := idToIndex[id]
+		if !ok {
+			// Joined while this packet was being put together, so it isn't in it (and index 0 would mark someone
+			// else as "self"). Its own join sends everyone a newer packet anyway.
+			return true
+		}
 		client := value.(*Client)
-		clientPacket, _ := sjson.Set(packet, "state."+fmt.Sprint(idToIndex[id])+".self", true)
+		clientPacket, _ := sjson.Set(packet, "state."+fmt.Sprint(index)+".self", true)
 		client.sendPacket(clientPacket)
 		return true
 	})
+}
+
+// pongPacket answers a ping: the time the client sent (so it can measure its ping) and the ping and hearts of
+// everyone online in the room, as {"<clientId>":[pingMs, health, healthCapacity]}
+func (r *Room) pongPacket(t string) string {
+	packet := `{"type":"PONG","quiet":true,"clients":{}}`
+	if t != "" {
+		packet, _ = sjson.SetRaw(packet, "t", t)
+	}
+
+	r.clients.Range(func(_, value interface{}) bool {
+		client := value.(*Client)
+		client.mu.Lock()
+		online := client.conn != nil
+		entry := fmt.Sprintf("[%d,%d,%d]", client.rtt, client.hp, client.maxHp)
+		client.mu.Unlock()
+		if online {
+			// ":" makes sjson use the number as an object key instead of an array index
+			packet, _ = sjson.SetRaw(packet, "clients.:"+fmt.Sprint(client.id), entry)
+		}
+		return true
+	})
+
+	return packet
 }
 
 func (r *Room) GetLastActivity() time.Time {

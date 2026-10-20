@@ -4,7 +4,13 @@ services:
     build: . # local dockerfile (includes password support)
     environment:
       - ANCHOR_PASSWORD=byt-till-ditt-losenord # leave empty for an open server
+      # - ANCHOR_TLS=0          # turn off encrypted connections (on by default)
+      # - ANCHOR_REQUIRE_TLS=1  # only accept encrypted connections
+      # - ANCHOR_UDP=0          # keep realtime packets on TCP
     ports:
-      - "43383:43383"
+      - "43383:43383/tcp"
+      - "43383:43383/udp" # realtime packets (positions, enemies), falls back to TCP when blocked
     volumes:
-      - ./stats.json:/app/stats.json #stats.json file
+      - ./stats.json:/app/stats.json # stats.json file
+      - ./sessions:/app/sessions # saved sessions
+      - ./tls:/app/tls # the TLS certificate, keep it so players don't see a new one after every rebuild
