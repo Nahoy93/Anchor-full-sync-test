@@ -6,8 +6,16 @@ This fork adds what the co-op build of Ship of Harkinian ([Shipwright-Anchor-ful
 
 - **Password:** set `ANCHOR_PASSWORD` to require it on join. After 10 wrong attempts in 5 minutes an IP is blocked for a while.
 - **Saved sessions:** room progress is saved to `sessions/` (every 10 seconds and on shutdown) and loaded again when someone joins the same Room ID.
-- **Console commands:** `list`, `sessions`, `save`, `deleteSession <room>`, `deleteRoom <room>`, `messageAll <text>`, `stop`.
+- **Console commands:** `list`, `sessions`, `save`, `deleteSession <room>`, `deleteRoom <room>`, `messageAll <text>`, `stop`. `list` also shows each player's ping, traffic (KB/s), send queue, TLS and UDP.
 - **Windows:** edit the password in `Starta server.bat` and double click it.
+- **Encryption (TLS):** TLS and plain connections share the port (a TLS connection starts with byte `0x16`). The first start creates a self-signed certificate in `tls/` and prints its SHA-256 fingerprint; the game remembers it on the first connection or checks it against a pinned one. Keep `tls/`. `ANCHOR_TLS=0` turns TLS off, `ANCHOR_REQUIRE_TLS=1` refuses plain connections. `-tls-cert`/`-tls-key` (`ANCHOR_TLS_CERT`/`ANCHOR_TLS_KEY`) use other files.
+- **UDP channel:** realtime packets (`PLAYER_UPDATE`, `PLAYER_SFX`, `OCARINA_SFX`, `ENEMY_SYNC`, `PROJECTILES`, `DROP_MOVE`) go over UDP on the same port number once the client has confirmed that UDP works both ways, otherwise over TCP. Datagrams are AES-128-GCM encrypted for TLS clients (the key is only sent over TLS) and carry a sequence number, so old and repeated ones are dropped. `ANCHOR_UDP=0` turns it off. Forward the port for both TCP and UDP.
+- **SERVER_INFO:** sent after the handshake, tells the game what the server supports (`targets`, `ping`, `udp`). Older games ignore it.
+- **Fan-out:** a packet with `"targetClientIds":[...]` is copied to each of those clients by the server, so the game uploads it once.
+- **PING/PONG:** the server answers `PING` with `PONG`, echoing `t` and listing every online client's `[pingMs, health, healthCapacity]` in the room.
+- **Batched writes:** whatever waits in a client's send queue is written in one go (one TLS record).
+
+Run the tests with `go test -race .`.
 
 ## What is this?
 
@@ -47,7 +55,7 @@ go run .
 ### Docker
 
 ```sh
-docker run -p 43383:43383 -v /my/mnt/logs:/app/logs ghcr.io/garrettjoecox/anchor:latest
+docker run -p 43383:43383 -p 43383:43383/udp -v /my/mnt/logs:/app/logs ghcr.io/garrettjoecox/anchor:latest
 ```
 
 Optional environment variables can be set:

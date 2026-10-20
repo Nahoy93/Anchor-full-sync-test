@@ -2,5 +2,8 @@
 stats.json
 *.log
 .screenrc
-node_modulessessions/
+node_modules
+sessions/
 *.exe
+# The server's TLS certificate and private key
+tls/

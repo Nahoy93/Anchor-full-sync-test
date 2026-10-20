@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -32,6 +33,11 @@ type Server struct {
 	rooms             sync.Map
 	gameCompleteCount atomic.Uint64
 	nextClientId      atomic.Uint64
+
+	tlsConfig      *tls.Config // nil when TLS is off
+	tlsFingerprint string
+	udpConn        *net.UDPConn // nil when UDP is off
+	udpTokens      sync.Map     // uint32 token -> *Client
 }
 
 func NewServer(config Config) *Server {
@@ -58,17 +64,37 @@ func (s *Server) Start(errChan chan error) {
 	}
 	s.listener = listener
 
+	if s.config.TLS {
+		if err := s.setupTLS(); err != nil {
+			log.Fatalf("TLS: %v (set ANCHOR_TLS=0 to run without it)", err)
+		}
+	}
+	if s.config.UDP {
+		s.startUDP()
+	}
+
 	go s.cleanupInactiveRooms(errChan)
 	go s.heartbeat(errChan)
 	go s.parseStats(errChan)
 	go s.statsHeartbeat(errChan)
 	go s.saveDirtySessions(errChan)
+	go s.trafficLoop()
 
 	log.Println("Server running on", addr)
 	if s.config.Password != "" {
 		log.Println("Password protection: ON")
 	} else {
 		log.Println("Password protection: OFF (anyone can join, set -password or ANCHOR_PASSWORD)")
+	}
+	if s.tlsConfig != nil {
+		if s.config.RequireTLS {
+			log.Println("Encryption (TLS): REQUIRED, connections without it are refused")
+		} else {
+			log.Println("Encryption (TLS): ON (players turn on \"Encrypted Connection (TLS)\" in the Anchor menu)")
+		}
+		log.Println("TLS certificate fingerprint:", s.tlsFingerprint)
+	} else {
+		log.Println("Encryption (TLS): OFF")
 	}
 	log.Println("Quiet mode:", s.quietMode.Load())
 
@@ -195,13 +221,42 @@ func (s *Server) heartbeat(errChan chan error) {
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn, errChan chan error) {
-	defer conn.Close()
+// trafficLoop updates every client's traffic rates for the console
+func (s *Server) trafficLoop() {
+	const interval = 2 * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.onlineClients.Range(func(_, value interface{}) bool {
+			client := value.(*Client)
+			in, out := client.bytesIn.Load(), client.bytesOut.Load()
+			client.mu.Lock()
+			client.rateIn = float64(in-client.lastBytesIn) / interval.Seconds()
+			client.rateOut = float64(out-client.lastBytesOut) / interval.Seconds()
+			client.lastBytesIn, client.lastBytesOut = in, out
+			client.mu.Unlock()
+			return true
+		})
+	}
+}
+
+func (s *Server) handleConnection(rawConn net.Conn, errChan chan error) {
+	defer rawConn.Close()
 	defer func() {
 		if r := recover(); r != nil {
 			errChan <- fmt.Errorf("panic in handleConnection: %v", r)
 		}
 	}()
+
+	// TLS or plain, decided by the first byte the client sends
+	conn, isTLS, err := s.acceptConn(rawConn)
+	if err != nil {
+		if !errors.Is(err, errNoFirstByte) {
+			log.Printf("Connection from %s: %v\n", remoteIP(rawConn), err)
+		}
+		return
+	}
 
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, INITIAL_SCAN_BUFFER), MAX_PACKET_SIZE)
@@ -240,6 +295,12 @@ func (s *Server) handleConnection(conn net.Conn, errChan chan error) {
 				continue
 			}
 
+			if s.config.RequireTLS && !isTLS {
+				log.Printf("Refusing handshake from %s: no TLS\n", remoteIP(conn))
+				rejectConnection(conn, "This server only accepts encrypted connections. Turn on \"Encrypted Connection (TLS)\" in the Anchor menu.")
+				return
+			}
+
 			ip := remoteIP(conn)
 			if s.logins.isBlocked(ip) {
 				log.Printf("Refusing handshake from %s: too many wrong passwords\n", ip)
@@ -254,11 +315,18 @@ func (s *Server) handleConnection(conn net.Conn, errChan chan error) {
 			}
 			s.logins.reset(ip)
 
-			client = s.findOrCreateClient(packet, conn)
-			log.Printf("Client %v Connected\n", client.id)
+			client = s.findOrCreateClient(packet, conn, isTLS)
+			if isTLS {
+				log.Printf("Client %v Connected (TLS)\n", client.id)
+			} else {
+				log.Printf("Client %v Connected\n", client.id)
+			}
+			client.bytesIn.Add(uint64(len(packet) + 1))
 			client.room.broadcastAllClientState()
 			client.sendRoomState()
+			client.sendServerInfo()
 		} else {
+			client.bytesIn.Add(uint64(len(packet) + 1))
 			client.handlePacket(packet)
 		}
 	}
@@ -282,7 +350,7 @@ func (s *Server) handleConnection(conn net.Conn, errChan chan error) {
 
 }
 
-func (s *Server) findOrCreateClient(packet string, conn net.Conn) *Client {
+func (s *Server) findOrCreateClient(packet string, conn net.Conn, isTLS bool) *Client {
 	clientId := gjson.Get(packet, "clientId").Uint()
 	roomId := gjson.Get(packet, "roomId").String()
 
@@ -317,7 +385,7 @@ func (s *Server) findOrCreateClient(packet string, conn net.Conn) *Client {
 	if ok {
 		client = loadedClient.(*Client)
 		client.mu.Lock()
-		client.attachConnLocked(conn)
+		client.attachConnLocked(conn, isTLS)
 		client.state = clientState
 		client.team = team
 		client.lastActivity = time.Now()
@@ -330,9 +398,12 @@ func (s *Server) findOrCreateClient(packet string, conn net.Conn) *Client {
 			team:         team,
 			state:        clientState,
 			lastActivity: time.Now(),
+			rtt:          -1,
+			hp:           -1,
+			maxHp:        -1,
 		}
 		client.mu.Lock()
-		client.attachConnLocked(conn)
+		client.attachConnLocked(conn, isTLS)
 		client.mu.Unlock()
 		room.clients.Store(clientId, client)
 	}

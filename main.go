@@ -135,8 +135,10 @@ func processStdin(s *Server) {
 				room.clients.Range(func(_, value interface{}) bool {
 					client := value.(*Client)
 					client.mu.Lock()
-					log.Println("  Client", fmt.Sprint(client.id)+":", client.state)
+					state := client.state
 					client.mu.Unlock()
+					log.Println("  Client", fmt.Sprint(client.id)+":", state)
+					log.Println("    " + client.networkSummary())
 					return true
 				})
 				log.SetFlags(log.LstdFlags)
@@ -252,7 +254,7 @@ func processStdin(s *Server) {
 
 			os.Exit(0)
 		default:
-			log.Printf("Available commands:\nhelp: Show this help message\nstats: Print server stats\nquiet: Toggle quiet mode\nroomCount: Show the number of rooms\nclientCount: Show the number of clients\nlist: List all rooms and clients\nstop <message>: Stop the server\nmessage <clientId> <message>: Send a message to a client\nmessageAll <message>: Send a message to all clients\ndisable <clientId> <message>: Disable anchor on a client\ndisableAll <message>: Disable anchor on all clients\ndeleteRoom <roomID>: Disables anchor on all online clients in the room and deletes it\nsave: Save all sessions to disk now\nsessions: List saved sessions\ndeleteSession <roomID>: Delete a saved session (room must not be active)\n")
+			log.Printf("Available commands:\nhelp: Show this help message\nstats: Print server stats\nquiet: Toggle quiet mode\nroomCount: Show the number of rooms\nclientCount: Show the number of clients\nlist: List all rooms and clients (with ping, traffic, send queue, TLS and UDP)\nstop <message>: Stop the server\nmessage <clientId> <message>: Send a message to a client\nmessageAll <message>: Send a message to all clients\ndisable <clientId> <message>: Disable anchor on a client\ndisableAll <message>: Disable anchor on all clients\ndeleteRoom <roomID>: Disables anchor on all online clients in the room and deletes it\nsave: Save all sessions to disk now\nsessions: List saved sessions\ndeleteSession <roomID>: Delete a saved session (room must not be active)\n")
 		}
 	}
 }

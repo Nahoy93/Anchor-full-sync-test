@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,11 +15,39 @@ import (
 // Config holds the self-hosting options. Every option can be set either with a command line flag
 // or with an environment variable (the flag wins if both are given).
 //
-//	-port      / PORT             TCP port to listen on (default 43383)
-//	-password  / ANCHOR_PASSWORD  Password required to join (empty = open server)
+//	-port         / PORT                TCP and UDP port to listen on (default 43383)
+//	-password     / ANCHOR_PASSWORD     Password required to join (empty = open server)
+//	-tls          / ANCHOR_TLS          Accept encrypted (TLS) connections next to plain ones (default on, 0 = off)
+//	-require-tls  / ANCHOR_REQUIRE_TLS  Only accept encrypted connections (default off)
+//	-tls-cert     / ANCHOR_TLS_CERT     Certificate file, created on the first start (default tls/cert.pem)
+//	-tls-key      / ANCHOR_TLS_KEY      Private key file, created on the first start (default tls/key.pem)
+//	-udp          / ANCHOR_UDP          Send realtime packets (positions, enemies) over UDP when it works (default on)
 type Config struct {
-	Port     int
-	Password string
+	Port       int
+	Password   string
+	TLS        bool
+	RequireTLS bool
+	TLSCert    string
+	TLSKey     string
+	UDP        bool
+}
+
+// envBool reads an on/off environment variable: 1/true/on/yes or 0/false/off/no
+func envBool(name string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "on", "yes":
+		return true
+	case "0", "false", "off", "no":
+		return false
+	}
+	return def
+}
+
+func envString(name, def string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return def
 }
 
 func LoadConfig() Config {
@@ -30,10 +59,24 @@ func LoadConfig() Config {
 		}
 	}
 	cfg.Password = os.Getenv("ANCHOR_PASSWORD")
+	cfg.TLS = envBool("ANCHOR_TLS", true)
+	cfg.RequireTLS = envBool("ANCHOR_REQUIRE_TLS", false)
+	cfg.TLSCert = envString("ANCHOR_TLS_CERT", "tls/cert.pem")
+	cfg.TLSKey = envString("ANCHOR_TLS_KEY", "tls/key.pem")
+	cfg.UDP = envBool("ANCHOR_UDP", true)
 
-	flag.IntVar(&cfg.Port, "port", cfg.Port, "TCP port to listen on")
+	flag.IntVar(&cfg.Port, "port", cfg.Port, "TCP and UDP port to listen on")
 	flag.StringVar(&cfg.Password, "password", cfg.Password, "password clients must send to join (empty = no password)")
+	flag.BoolVar(&cfg.TLS, "tls", cfg.TLS, "accept encrypted (TLS) connections next to plain ones")
+	flag.BoolVar(&cfg.RequireTLS, "require-tls", cfg.RequireTLS, "only accept encrypted (TLS) connections")
+	flag.StringVar(&cfg.TLSCert, "tls-cert", cfg.TLSCert, "TLS certificate file (created on the first start)")
+	flag.StringVar(&cfg.TLSKey, "tls-key", cfg.TLSKey, "TLS private key file (created on the first start)")
+	flag.BoolVar(&cfg.UDP, "udp", cfg.UDP, "send realtime packets (positions, enemies) over UDP when it works")
 	flag.Parse()
+
+	if cfg.RequireTLS && !cfg.TLS {
+		log.Fatal("-require-tls needs TLS turned on (-tls / ANCHOR_TLS)")
+	}
 
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		log.Fatalf("Invalid port %d", cfg.Port)
